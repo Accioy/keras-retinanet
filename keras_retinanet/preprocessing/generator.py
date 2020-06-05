@@ -18,7 +18,7 @@ import numpy as np
 import random
 import warnings
 
-import keras
+import tensorflow as tf
 
 from ..utils.anchors import (
     anchor_targets_bbox,
@@ -36,18 +36,20 @@ from ..utils.image import (
 from ..utils.transform import transform_aabb
 
 
-class Generator(keras.utils.Sequence):
+class Generator(tf.keras.utils.Sequence):
     """ Abstract generator class.
     """
 
     def __init__(
         self,
         transform_generator = None,
+        visual_effect_generator=None,
         batch_size=1,
         group_method='ratio',  # one of 'none', 'random', 'ratio'
         shuffle_groups=True,
         image_min_side=800,
         image_max_side=1333,
+        no_resize=False,
         transform_parameters=None,
         compute_anchor_targets=anchor_targets_bbox,
         compute_shapes=guess_shapes,
@@ -63,17 +65,20 @@ class Generator(keras.utils.Sequence):
             shuffle_groups         : If True, shuffles the groups each epoch.
             image_min_side         : After resizing the minimum side of an image is equal to image_min_side.
             image_max_side         : If after resizing the maximum side is larger than image_max_side, scales down further so that the max side is equal to image_max_side.
+            no_resize              : If True, no image/annotation resizing is performed.
             transform_parameters   : The transform parameters used for data augmentation.
             compute_anchor_targets : Function handler for computing the targets of anchors for an image and its annotations.
             compute_shapes         : Function handler for computing the shapes of the pyramid for a given input.
             preprocess_image       : Function handler for preprocessing an image (scaling / normalizing) for passing through a network.
         """
         self.transform_generator    = transform_generator
+        self.visual_effect_generator = visual_effect_generator
         self.batch_size             = int(batch_size)
         self.group_method           = group_method
         self.shuffle_groups         = shuffle_groups
         self.image_min_side         = image_min_side
         self.image_max_side         = image_max_side
+        self.no_resize              = no_resize
         self.transform_parameters   = transform_parameters or TransformParameters()
         self.compute_anchor_targets = compute_anchor_targets
         self.compute_shapes         = compute_shapes
@@ -126,6 +131,11 @@ class Generator(keras.utils.Sequence):
         """
         raise NotImplementedError('image_aspect_ratio method not implemented')
 
+    def image_path(self, image_index):
+        """ Get the path to an image.
+        """
+        raise NotImplementedError('image_path method not implemented')
+
     def load_image(self, image_index):
         """ Load an image at the image_index.
         """
@@ -164,20 +174,45 @@ class Generator(keras.utils.Sequence):
 
             # delete invalid indices
             if len(invalid_indices):
-                warnings.warn('Image with id {} (shape {}) contains the following invalid boxes: {}.'.format(
+                warnings.warn('Image {} with id {} (shape {}) contains the following invalid boxes: {}.'.format(
+                    self.image_path(group[index]),
                     group[index],
                     image.shape,
                     annotations['bboxes'][invalid_indices, :]
                 ))
                 for k in annotations_group[index].keys():
                     annotations_group[index][k] = np.delete(annotations[k], invalid_indices, axis=0)
-
         return image_group, annotations_group
 
     def load_image_group(self, group):
         """ Load images for all images in a group.
         """
         return [self.load_image(image_index) for image_index in group]
+
+    def random_visual_effect_group_entry(self, image, annotations):
+        """ Randomly transforms image and annotation.
+        """
+        visual_effect = next(self.visual_effect_generator)
+        # apply visual effect
+        image = visual_effect(image)
+        return image, annotations
+
+    def random_visual_effect_group(self, image_group, annotations_group):
+        """ Randomly apply visual effect on each image.
+        """
+        assert(len(image_group) == len(annotations_group))
+
+        if self.visual_effect_generator is None:
+            # do nothing
+            return image_group, annotations_group
+
+        for index in range(len(image_group)):
+            # apply effect on a single group entry
+            image_group[index], annotations_group[index] = self.random_visual_effect_group_entry(
+                image_group[index], annotations_group[index]
+            )
+
+        return image_group, annotations_group
 
     def random_transform_group_entry(self, image, annotations, transform=None):
         """ Randomly transforms image and annotation.
@@ -212,7 +247,10 @@ class Generator(keras.utils.Sequence):
     def resize_image(self, image):
         """ Resize an image using image_min_side and image_max_side.
         """
-        return resize_image(image, min_side=self.image_min_side, max_side=self.image_max_side)
+        if self.no_resize:
+            return image, 1
+        else:
+            return resize_image(image, min_side=self.image_min_side, max_side=self.image_max_side)
 
     def preprocess_group_entry(self, image, annotations):
         """ Preprocess image and its annotations.
@@ -227,7 +265,7 @@ class Generator(keras.utils.Sequence):
         annotations['bboxes'] *= image_scale
 
         # convert to the wanted keras floatx
-        image = keras.backend.cast_to_floatx(image)
+        image = tf.keras.backend.cast_to_floatx(image)
 
         return image, annotations
 
@@ -262,13 +300,13 @@ class Generator(keras.utils.Sequence):
         max_shape = tuple(max(image.shape[x] for image in image_group) for x in range(3))
 
         # construct an image batch object
-        image_batch = np.zeros((self.batch_size,) + max_shape, dtype=keras.backend.floatx())
+        image_batch = np.zeros((self.batch_size,) + max_shape, dtype=tf.keras.backend.floatx())
 
         # copy all images to the upper left part of the image batch object
         for image_index, image in enumerate(image_group):
             image_batch[image_index, :image.shape[0], :image.shape[1], :image.shape[2]] = image
 
-        if keras.backend.image_data_format() == 'channels_first':
+        if tf.keras.backend.image_data_format() == 'channels_first':
             image_batch = image_batch.transpose((0, 3, 1, 2))
 
         return image_batch
@@ -304,6 +342,9 @@ class Generator(keras.utils.Sequence):
 
         # check validity of annotations
         image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
+
+        # randomly apply visual effect
+        image_group, annotations_group = self.random_visual_effect_group(image_group, annotations_group)
 
         # randomly transform data
         image_group, annotations_group = self.random_transform_group(image_group, annotations_group)

@@ -15,7 +15,7 @@ limitations under the License.
 """
 
 import numpy as np
-import keras
+import tensorflow as tf
 
 from ..utils.compute_overlap import compute_overlap
 
@@ -45,8 +45,8 @@ The default anchor parameters.
 AnchorParameters.default = AnchorParameters(
     sizes   = [32, 64, 128, 256, 512],
     strides = [8, 16, 32, 64, 128],
-    ratios  = np.array([0.5, 1, 2], keras.backend.floatx()),
-    scales  = np.array([2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)], keras.backend.floatx()),
+    ratios  = np.array([0.5, 1, 2], tf.keras.backend.floatx()),
+    scales  = np.array([2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)], tf.keras.backend.floatx()),
 )
 
 
@@ -85,8 +85,8 @@ def anchor_targets_bbox(
 
     batch_size = len(image_group)
 
-    regression_batch  = np.zeros((batch_size, anchors.shape[0], 4 + 1), dtype=keras.backend.floatx())
-    labels_batch      = np.zeros((batch_size, anchors.shape[0], num_classes + 1), dtype=keras.backend.floatx())
+    regression_batch  = np.zeros((batch_size, anchors.shape[0], 4 + 1), dtype=tf.keras.backend.floatx())
+    labels_batch      = np.zeros((batch_size, anchors.shape[0], num_classes + 1), dtype=tf.keras.backend.floatx())
 
     # compute labels and regression targets
     for index, (image, annotations) in enumerate(zip(image_group, annotations_group)):
@@ -164,7 +164,10 @@ def layer_shapes(image_shape, model):
     for layer in model.layers[1:]:
         nodes = layer._inbound_nodes
         for node in nodes:
-            inputs = [shape[lr.name] for lr in node.inbound_layers]
+            inbound_layers = node.inbound_layers
+            if not isinstance(inbound_layers, list):
+                inbound_layers = [inbound_layers]
+            inputs = [shape[lr.name] for lr in inbound_layers]
             if not inputs:
                 continue
             shape[layer.name] = layer.compute_output_shape(inputs[0] if len(inputs) == 1 else inputs)
@@ -309,6 +312,9 @@ def generate_anchors(base_size=16, ratios=None, scales=None):
 def bbox_transform(anchors, gt_boxes, mean=None, std=None):
     """Compute bounding-box regression targets for an image."""
 
+    # The Mean and std are calculated from COCO dataset.
+    # Bounding box normalization was firstly introduced in the Fast R-CNN paper.
+    # See https://github.com/fizyr/keras-retinanet/issues/1273#issuecomment-585828825  for more details
     if mean is None:
         mean = np.array([0, 0, 0, 0])
     if std is None:
@@ -327,6 +333,9 @@ def bbox_transform(anchors, gt_boxes, mean=None, std=None):
     anchor_widths  = anchors[:, 2] - anchors[:, 0]
     anchor_heights = anchors[:, 3] - anchors[:, 1]
 
+    # According to the information provided by a keras-retinanet author, they got marginally better results using
+    # the following way of bounding box parametrization.
+    # See https://github.com/fizyr/keras-retinanet/issues/1273#issuecomment-585828825 for more details
     targets_dx1 = (gt_boxes[:, 0] - anchors[:, 0]) / anchor_widths
     targets_dy1 = (gt_boxes[:, 1] - anchors[:, 1]) / anchor_heights
     targets_dx2 = (gt_boxes[:, 2] - anchors[:, 2]) / anchor_widths

@@ -18,35 +18,33 @@ import argparse
 import os
 import sys
 
-import keras
-import tensorflow as tf
-
 # Allow relative imports when being executed as script.
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
     import keras_retinanet.bin  # noqa: F401
     __package__ = "keras_retinanet.bin"
 
+import tensorflow as tf
+tf.compat.v1.disable_v2_behavior()
+
 # Change these to absolute imports if you copy this script outside the keras_retinanet package.
 from .. import models
 from ..preprocessing.csv_generator import CSVGenerator
 from ..preprocessing.pascal_voc import PascalVocGenerator
+from ..utils.anchors import make_shapes_callback
 from ..utils.config import read_config_file, parse_anchor_parameters
 from ..utils.eval import evaluate
-from ..utils.keras_version import check_keras_version
+from ..utils.gpu import setup_gpu
+from ..utils.tf_version import check_tf_version
 
 
-def get_session():
-    """ Construct a modified tf session.
-    """
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth = True
-    return tf.Session(config=config)
-
-
-def create_generator(args):
+def create_generator(args, preprocess_image):
     """ Create generators for evaluation.
     """
+    common_args = {
+        'preprocess_image': preprocess_image,
+    }
+
     if args.dataset_type == 'coco':
         # import here to prevent unnecessary dependency on cocoapi
         from ..preprocessing.coco import CocoGenerator
@@ -58,15 +56,18 @@ def create_generator(args):
             image_max_side=args.image_max_side,
             config=args.config,
             shuffle_groups=False,
+            **common_args
         )
     elif args.dataset_type == 'pascal':
         validation_generator = PascalVocGenerator(
             args.pascal_path,
             'test',
+            image_extension=args.image_extension,
             image_min_side=args.image_min_side,
             image_max_side=args.image_max_side,
             config=args.config,
             shuffle_groups=False,
+            **common_args
         )
     elif args.dataset_type == 'csv':
         validation_generator = CSVGenerator(
@@ -76,6 +77,7 @@ def create_generator(args):
             image_max_side=args.image_max_side,
             config=args.config,
             shuffle_groups=False,
+            **common_args
         )
     else:
         raise ValueError('Invalid data type received: {}'.format(args.dataset_type))
@@ -95,6 +97,7 @@ def parse_args(args):
 
     pascal_parser = subparsers.add_parser('pascal')
     pascal_parser.add_argument('pascal_path', help='Path to dataset directory (ie. /tmp/VOCdevkit).')
+    pascal_parser.add_argument('--image-extension',   help='Declares the dataset images\' extension.', default='.jpg')
 
     csv_parser = subparsers.add_parser('csv')
     csv_parser.add_argument('annotations', help='Path to CSV file containing annotations for evaluation.')
@@ -103,7 +106,7 @@ def parse_args(args):
     parser.add_argument('model',              help='Path to RetinaNet model.')
     parser.add_argument('--convert-model',    help='Convert the model to an inference model (ie. the input is a training model).', action='store_true')
     parser.add_argument('--backbone',         help='The backbone of the model.', default='resnet50')
-    parser.add_argument('--gpu',              help='Id of the GPU to use (as reported by nvidia-smi).')
+    parser.add_argument('--gpu',              help='Id of the GPU to use (as reported by nvidia-smi).', type=int)
     parser.add_argument('--score-threshold',  help='Threshold on score to filter detections with (defaults to 0.05).', default=0.05, type=float)
     parser.add_argument('--iou-threshold',    help='IoU Threshold to count for a positive detection (defaults to 0.5).', default=0.5, type=float)
     parser.add_argument('--max-detections',   help='Max Detections per image (defaults to 100).', default=100, type=int)
@@ -121,13 +124,12 @@ def main(args=None):
         args = sys.argv[1:]
     args = parse_args(args)
 
-    # make sure keras is the minimum required version
-    check_keras_version()
+    # make sure tensorflow is the minimum required version
+    check_tf_version()
 
     # optionally choose specific GPU
     if args.gpu:
-        os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-    keras.backend.tensorflow_backend.set_session(get_session())
+        setup_gpu(args.gpu)
 
     # make save path if it doesn't exist
     if args.save_path is not None and not os.path.exists(args.save_path):
@@ -138,7 +140,8 @@ def main(args=None):
         args.config = read_config_file(args.config)
 
     # create the generator
-    generator = create_generator(args)
+    backbone = models.backbone(args.backbone)
+    generator = create_generator(args, backbone.preprocess_image)
 
     # optionally load anchor parameters
     anchor_params = None
@@ -148,6 +151,7 @@ def main(args=None):
     # load the model
     print('Loading model, this may take a second...')
     model = models.load_model(args.model, backbone_name=args.backbone)
+    generator.compute_shapes = make_shapes_callback(model)
 
     # optionally convert the model
     if args.convert_model:
@@ -161,7 +165,7 @@ def main(args=None):
         from ..utils.coco_eval import evaluate_coco
         evaluate_coco(generator, model, args.score_threshold)
     else:
-        average_precisions = evaluate(
+        average_precisions, inference_time = evaluate(
             generator,
             model,
             iou_threshold=args.iou_threshold,
@@ -182,6 +186,8 @@ def main(args=None):
         if sum(total_instances) == 0:
             print('No test instances found.')
             return
+
+        print('Inference time for {:.0f} images: {:.4f}'.format(generator.size(), inference_time))
 
         print('mAP using the weighted average of precisions among classes: {:.4f}'.format(sum([a * b for a, b in zip(total_instances, precisions)]) / sum(total_instances)))
         print('mAP: {:.4f}'.format(sum(precisions) / sum(x > 0 for x in total_instances)))

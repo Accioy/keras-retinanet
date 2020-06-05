@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-import keras
+import tensorflow as tf
 from ..utils.eval import evaluate
 
 
-class Evaluate(keras.callbacks.Callback):
+class Evaluate(tf.keras.callbacks.Callback):
     """ Evaluation callback for arbitrary datasets.
     """
 
@@ -41,7 +41,7 @@ class Evaluate(keras.callbacks.Callback):
             score_threshold  : The score confidence threshold to use for detections.
             max_detections   : The maximum number of detections to use per image.
             save_path        : The path to save images with visualized detections to.
-            tensorboard      : Instance of keras.callbacks.TensorBoard used to log the mAP value.
+            tensorboard      : Instance of tf.keras.callbacks.TensorBoard used to log the mAP value.
             weighted_average : Compute the mAP using the weighted average of precisions among classes.
             verbose          : Set the verbosity level, by default this is set to 1.
         """
@@ -60,7 +60,7 @@ class Evaluate(keras.callbacks.Callback):
         logs = logs or {}
 
         # run evaluation
-        average_precisions = evaluate(
+        average_precisions, _ = evaluate(
             self.generator,
             self.model,
             iou_threshold=self.iou_threshold,
@@ -72,7 +72,7 @@ class Evaluate(keras.callbacks.Callback):
         # compute per class average precision
         total_instances = []
         precisions = []
-        for label, (average_precision, num_annotations ) in average_precisions.items():
+        for label, (average_precision, num_annotations) in average_precisions.items():
             if self.verbose == 1:
                 print('{:.0f} instances of class'.format(num_annotations),
                       self.generator.label_to_name(label), 'with average precision: {:.4f}'.format(average_precision))
@@ -83,13 +83,14 @@ class Evaluate(keras.callbacks.Callback):
         else:
             self.mean_ap = sum(precisions) / sum(x > 0 for x in total_instances)
 
-        if self.tensorboard is not None and self.tensorboard.writer is not None:
+        if self.tensorboard:
             import tensorflow as tf
-            summary = tf.Summary()
-            summary_value = summary.value.add()
-            summary_value.simple_value = self.mean_ap
-            summary_value.tag = "mAP"
-            self.tensorboard.writer.add_summary(summary, epoch)
+            if tf.version.VERSION < '2.0.0' and self.tensorboard.writer:
+                summary = tf.Summary()
+                summary_value = summary.value.add()
+                summary_value.simple_value = self.mean_ap
+                summary_value.tag = "mAP"
+                self.tensorboard.writer.add_summary(summary, epoch)
 
         logs['mAP'] = self.mean_ap
 

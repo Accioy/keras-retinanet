@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-import keras
-from keras.utils import get_file
+import tensorflow as tf
+from tensorflow.keras.utils import get_file
 import keras_resnet
 import keras_resnet.models
 
@@ -89,18 +89,18 @@ def resnet_retinanet(num_classes, backbone='resnet50', inputs=None, modifier=Non
     """
     # choose default input
     if inputs is None:
-        if keras.backend.image_data_format() == 'channels_first':
-            inputs = keras.layers.Input(shape=(3, None, None))
+        if tf.keras.backend.image_data_format() == 'channels_first':
+            inputs = tf.keras.layers.Input(shape=(3, None, None))
         else:
-            inputs = keras.layers.Input(shape=(None, None, 3))
+            inputs = tf.keras.layers.Input(shape=(None, None, 3))
 
     # create the resnet backbone
     if backbone == 'resnet50':
-        resnet = keras_resnet.models.ResNet50(inputs, include_top=False, freeze_bn=True)
+        resnet = keras_resnet.models.ResNet50(inputs, include_top=False, trainable_bn=False)
     elif backbone == 'resnet101':
-        resnet = keras_resnet.models.ResNet101(inputs, include_top=False, freeze_bn=True)
+        resnet = keras_resnet.models.ResNet101(inputs, include_top=False, trainable_bn=False)
     elif backbone == 'resnet152':
-        resnet = keras_resnet.models.ResNet152(inputs, include_top=False, freeze_bn=True)
+        resnet = keras_resnet.models.ResNet152(inputs, include_top=False, trainable_bn=False)
     else:
         raise ValueError('Backbone (\'{}\') is invalid.'.format(backbone))
 
